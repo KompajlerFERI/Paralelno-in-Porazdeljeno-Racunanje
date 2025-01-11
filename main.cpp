@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 
 #include <mpi.h>
@@ -5,6 +6,10 @@
 #include <iomanip>
 #include <sstream>
 
+#include "Block/Block.h"
+#include "BlockChain/BlockChain.h"
+
+constexpr int MASTER_RANK = 0;
 
 std::string sha256(const std::string& str) {
     unsigned char hash[EVP_MAX_MD_SIZE];
@@ -29,30 +34,73 @@ std::string sha256(const std::string& str) {
     return "";
 }
 
+void master(const int numberOfProcesses) {
+    std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
+}
+
+unsigned int countLeadingCharacter(const std::string &text, const char character) {
+    unsigned int counter = 0;
+    while (text[counter] == character) ++counter;
+    return counter;
+}
+
+void miner(const int rank) {
+    std::cout << "Hello from miner (" << rank << ")" << std::endl;
+
+    BlockChain localBlockchain;
+    unsigned int difficulty = 5;
+    while(true) {
+        const unsigned int index = localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1;
+        const std::string data = "To je blok [" + std::to_string(index) + "]";
+        const auto timestamp = std::chrono::system_clock::now();
+        auto timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp.time_since_epoch()).count();
+        std::string hash;
+        const std::string prevHash = localBlockchain.empty() ? "0" : localBlockchain[localBlockchain.size() - 1].hash;
+        Block block = Block(index, data, rank, timestamp, hash, prevHash, difficulty, 0);
+
+        // P R O O F   O F   W O R K   -   M I N I N G
+        t_ull nonce = 0;
+        while (true) {
+            hash = sha256(std::to_string(index) + data + std::to_string(timestampMS) + prevHash + std::to_string(difficulty) + std::to_string(nonce));
+            if (countLeadingCharacter(hash, '0') >= difficulty) {
+                block.hash = hash;
+                block.nonce = nonce;
+                break;
+            }
+            nonce++;
+        }
+
+        // V A L I D A T I O N
+        timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(block.timestamp.time_since_epoch()).count();
+        if ((block.index == (localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1)) &&
+            ((block.prevHash) == (localBlockchain.empty() ? "0" : localBlockchain.getLastHash())) &&
+            (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - block.timestamp) < std::chrono::seconds(60)) &&
+            (block.hash == sha256(std::to_string(block.index) + block.data + std::to_string(timestampMS) +
+                block.prevHash + std::to_string(block.difficulty) + std::to_string(block.nonce)))
+        ) {
+            localBlockchain.addBlock(block);
+        }
+
+        std::cout << localBlockchain.toString() << '\n' << std::endl;
+
+        //TODO   A D J U S T   D I F F I C U L T Y
+    }
+}
+
 int main(const int argc, char *argv[])
 {
     // M P I
     int rank;
     int numberOfProcesses;
 
-
-
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &numberOfProcesses);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    // Get the name of the processor
-    char processor_name[MPI_MAX_PROCESSOR_NAME];
-    int name_len;
-    MPI_Get_processor_name(processor_name, &name_len);
-
-    // Print off a hello world message
-    /*printf("Hello world from processor %s, rank %d out of %d processors\n", processor_name);*/
-
-    // Print hash of "hello world"
-    if(rank == 0) {
-        std::string temp = "Hello world";
-        std::cout << "\"Hello world\" hashed: " << sha256(temp) << std::endl;
+    if(rank == MASTER_RANK) {
+        master(numberOfProcesses);
+    } else {
+        miner(rank);
     }
 
     // Finalize the MPI environment.
