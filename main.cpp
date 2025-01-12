@@ -107,10 +107,12 @@ void miner(const int rank) {
                 std::cout << '\n' << MAGENTA << "Difficulty decreased to " << difficulty << std::endl;
             } else std::cout << '\n' << MAGENTA << "Difficulty did not change" << RESET << std::endl;
 
+            std::cout << CYAN << "Blockchain cumulative difficulty: " << localBlockchain.cumulativeDifficulty() << RESET <<std::endl;
+
             if (localBlockchain.isValid()) {
-                std::cout << GREEN << "Blockchain still valid" << RESET << "\n\n" <<std::endl;
+                std::cout << GREEN << "Blockchain still valid" << RESET << "\n\n" << std::endl;
             } else {
-                std::cout << RED << "Blockchain no longer valid" << RESET << "\n\n" <<std::endl;
+                std::cout << RED << "Blockchain no longer valid" << RESET << "\n\n" << std::endl;
             }
         }
     }

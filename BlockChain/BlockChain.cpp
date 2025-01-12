@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <cmath>
 
 #include "../sha256/sha256.h"
 
@@ -52,6 +53,15 @@ bool BlockChain::isValid() const {
 
     return true;
 }
+
+unsigned int BlockChain::cumulativeDifficulty() const {
+    unsigned int diffuculty = 0;
+    for (const Block &block: blockChain) {
+        diffuculty += std::pow(2, block.difficulty);
+    }
+    return diffuculty;
+}
+
 
 
 
