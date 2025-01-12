@@ -1,13 +1,9 @@
-#include <algorithm>
 #include <iostream>
-
 #include <mpi.h>
-#include <openssl/evp.h>
-#include <iomanip>
-#include <sstream>
 
 #include "Block/Block.h"
 #include "BlockChain/BlockChain.h"
+#include "sha256/sha256.h"
 
 // M P I
 constexpr int MASTER_RANK = 0;
@@ -28,29 +24,6 @@ const std::string CYAN = "\033[36m";
 const std::string WHITE = "\033[37m";
 const std::string RESET = "\033[0m";
 
-
-std::string sha256(const std::string& str) {
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int lengthOfHash = 0;
-
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (context != nullptr) {
-        if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr)) {
-            if (EVP_DigestUpdate(context, str.c_str(), str.size())) {
-                if (EVP_DigestFinal_ex(context, hash, &lengthOfHash)) {
-                    std::stringstream ss;
-                    for (unsigned int i = 0; i < lengthOfHash; ++i) {
-                        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                    }
-                    EVP_MD_CTX_free(context);
-                    return ss.str();
-                }
-            }
-        }
-        EVP_MD_CTX_free(context);
-    }
-    return "";
-}
 
 void master(const int numberOfProcesses) {
     std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
@@ -111,12 +84,18 @@ void miner(const int rank) {
 
             if (timeTaken < (timeExpected / 2)) {
                 difficulty = prevAdjustmentBlock.difficulty + 1;
-                std::cout << '\n' << MAGENTA << "Difficulty increased to " << difficulty << RESET << "\n\n" <<std::endl;
+                std::cout << '\n' << MAGENTA << "Difficulty increased to " << difficulty << RESET << std::endl;
             }
             else if(timeTaken > (timeExpected * 2)) {
                 difficulty = prevAdjustmentBlock.difficulty - 1;
-                std::cout << '\n' << MAGENTA << "Difficulty decreased to " << difficulty << "\n\n" <<std::endl;
-            } else std::cout << '\n' << MAGENTA << "Difficulty did not change" << RESET << "\n\n" <<std::endl;
+                std::cout << '\n' << MAGENTA << "Difficulty decreased to " << difficulty << std::endl;
+            } else std::cout << '\n' << MAGENTA << "Difficulty did not change" << RESET << std::endl;
+
+            if (localBlockchain.isValid()) {
+                std::cout << GREEN << "Blockchain still valid" << RESET << "\n\n" <<std::endl;
+            } else {
+                std::cout << RED << "Blockchain no longer valid" << RESET << "\n\n" <<std::endl;
+            }
         }
     }
 }

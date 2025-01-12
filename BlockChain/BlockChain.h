@@ -17,6 +17,7 @@ public:
 
     unsigned int getLastIndex() const;
     std::string getLastHash() const;
+    bool isValid() const;
 
     void addBlock(const Block &block);
 

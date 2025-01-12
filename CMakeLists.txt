@@ -2,9 +2,12 @@ cmake_minimum_required(VERSION 3.29)
 project(Projektna)
 
 # Add executable
-add_executable(Projektna main.cpp Block/Block.cpp Block/Block.h
+add_executable(Projektna main.cpp
+        Block/Block.cpp Block/Block.h
         BlockChain/BlockChain.cpp
-        BlockChain/BlockChain.h)
+        BlockChain/BlockChain.h
+        sha256/sha256.cpp
+        sha256/sha256.h)
 
 # Find MPI and Link it
 find_package(MPI REQUIRED)
