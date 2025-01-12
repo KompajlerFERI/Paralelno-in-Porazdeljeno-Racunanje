@@ -9,7 +9,25 @@
 #include "Block/Block.h"
 #include "BlockChain/BlockChain.h"
 
+// M P I
 constexpr int MASTER_RANK = 0;
+
+// B L O C K   C H A I N
+constexpr unsigned int INITIAL_DIFFICULTY = 3;
+constexpr unsigned int BLOCK_GEN_INTERVAL = 2; // in secondss
+constexpr unsigned int ADJUST_DIFFICULTY_INTERVAL = 5; // every 5 blocks generated
+
+// A N S I   C O L O R   E S C A P E   C O D E S
+const std::string BLACK = "\033[30m";
+const std::string RED = "\033[31m";
+const std::string GREEN = "\033[32m";
+const std::string YELLOW = "\033[33m";
+const std::string BLUE = "\033[34m";
+const std::string MAGENTA = "\033[35m";
+const std::string CYAN = "\033[36m";
+const std::string WHITE = "\033[37m";
+const std::string RESET = "\033[0m";
+
 
 std::string sha256(const std::string& str) {
     unsigned char hash[EVP_MAX_MD_SIZE];
@@ -48,7 +66,8 @@ void miner(const int rank) {
     std::cout << "Hello from miner (" << rank << ")" << std::endl;
 
     BlockChain localBlockchain;
-    unsigned int difficulty = 5;
+    unsigned int difficulty = INITIAL_DIFFICULTY;
+
     while(true) {
         const unsigned int index = localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1;
         const std::string data = "To je blok [" + std::to_string(index) + "]";
@@ -81,9 +100,24 @@ void miner(const int rank) {
             localBlockchain.addBlock(block);
         }
 
-        std::cout << localBlockchain.toString() << '\n' << std::endl;
+        std::cout << localBlockchain[localBlockchain.size() - 1].toString() << std::endl;
 
-        //TODO   A D J U S T   D I F F I C U L T Y
+        // A D J U S T   D I F F I C U L T Y
+        if(localBlockchain.size() % ADJUST_DIFFICULTY_INTERVAL == 0) {
+            const Block& prevAdjustmentBlock = localBlockchain[localBlockchain.size() - BLOCK_GEN_INTERVAL];
+            const Block& lastBlock = localBlockchain[localBlockchain.size() - 1];
+            constexpr unsigned int timeExpected = BLOCK_GEN_INTERVAL * ADJUST_DIFFICULTY_INTERVAL;
+            const unsigned int timeTaken = std::chrono::duration_cast<std::chrono::seconds>(lastBlock.timestamp - prevAdjustmentBlock.timestamp).count();
+
+            if (timeTaken < (timeExpected / 2)) {
+                difficulty = prevAdjustmentBlock.difficulty + 1;
+                std::cout << '\n' << MAGENTA << "Difficulty increased to " << difficulty << RESET << "\n\n" <<std::endl;
+            }
+            else if(timeTaken > (timeExpected * 2)) {
+                difficulty = prevAdjustmentBlock.difficulty - 1;
+                std::cout << '\n' << MAGENTA << "Difficulty decreased to " << difficulty << "\n\n" <<std::endl;
+            } else std::cout << '\n' << MAGENTA << "Difficulty did not change" << RESET << "\n\n" <<std::endl;
+        }
     }
 }
 
