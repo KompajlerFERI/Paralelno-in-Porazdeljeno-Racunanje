@@ -1,5 +1,7 @@
 #include <iostream>
 #include <mpi.h>
+#include <omp.h>
+#include <thread>
 
 #include "Block/Block.h"
 #include "BlockChain/BlockChain.h"
@@ -46,20 +48,34 @@ void miner(const int rank) {
         const std::string data = "To je blok [" + std::to_string(index) + "]";
         const auto timestamp = std::chrono::system_clock::now();
         auto timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp.time_since_epoch()).count();
-        std::string hash;
         const std::string prevHash = localBlockchain.empty() ? "0" : localBlockchain[localBlockchain.size() - 1].hash;
-        Block block = Block(index, data, rank, timestamp, hash, prevHash, difficulty, 0);
+        Block block = Block(index, data, rank, timestamp, std::string(), prevHash, difficulty, 0);
 
         // P R O O F   O F   W O R K   -   M I N I N G
-        t_ull nonce = 0;
-        while (true) {
-            hash = sha256(std::to_string(index) + data + std::to_string(timestampMS) + prevHash + std::to_string(difficulty) + std::to_string(nonce));
-            if (countLeadingCharacter(hash, '0') >= difficulty) {
-                block.hash = hash;
-                block.nonce = nonce;
-                break;
+        bool hashFound = false;
+
+        #pragma omp parallel
+        {
+            const int thread_id = omp_get_thread_num();
+            const int num_threads = omp_get_num_threads();
+            const t_ull step = ULLONG_MAX / num_threads;
+            const t_ull start = thread_id * step;
+            const t_ull end = (thread_id + 1) * step;
+
+            std::string localHash;
+            for (t_ull localNonce = start; localNonce < end && !hashFound; ++localNonce) {
+                localHash = sha256(std::to_string(index) + data + std::to_string(timestampMS) + prevHash + std::to_string(difficulty) + std::to_string(localNonce));
+                if (countLeadingCharacter(localHash, '0') >= difficulty) {
+                #pragma omp critical
+                    {
+                        if (!hashFound) {
+                            hashFound = true;
+                            block.hash = localHash;
+                            block.nonce = localNonce;
+                        }
+                    }
+                }
             }
-            nonce++;
         }
 
         // V A L I D A T I O N
