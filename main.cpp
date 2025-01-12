@@ -1,7 +1,10 @@
+#include <fstream>
 #include <iostream>
 #include <mpi.h>
 #include <omp.h>
 #include <thread>
+#include <mutex>
+#include <shared_mutex>
 
 #include "Block/Block.h"
 #include "BlockChain/BlockChain.h"
@@ -9,10 +12,11 @@
 
 // M P I
 constexpr int MASTER_RANK = 0;
+std::string COLOR_CODE;
 
 // B L O C K   C H A I N
 constexpr unsigned int INITIAL_DIFFICULTY = 3;
-constexpr unsigned int BLOCK_GEN_INTERVAL = 2; // in secondss
+constexpr unsigned int BLOCK_GEN_INTERVAL = 2; // in seconds
 constexpr unsigned int ADJUST_DIFFICULTY_INTERVAL = 5; // every 5 blocks generated
 
 // A N S I   C O L O R   E S C A P E   C O D E S
@@ -26,6 +30,20 @@ const std::string CYAN = "\033[36m";
 const std::string WHITE = "\033[37m";
 const std::string RESET = "\033[0m";
 
+std::shared_mutex blockchainSharedMutex;
+std::mutex coutMutex;
+
+std::string getColorCode(const int rank) {
+    switch (rank) {
+        case 1: return RED;
+        case 2: return GREEN;
+        case 3: return YELLOW;
+        case 4: return BLUE;
+        case 5: return MAGENTA;
+        case 6: return CYAN;
+        default: return WHITE;
+    }
+}
 
 void master(const int numberOfProcesses) {
     std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
@@ -37,18 +55,81 @@ unsigned int countLeadingCharacter(const std::string &text, const char character
     return counter;
 }
 
-void miner(const int rank) {
-    std::cout << "Hello from miner (" << rank << ")" << std::endl;
+void server(const int rank, const int numberOfProcesses, BlockChain &localBlockChain) {
+    MPI_Status status;
+    int messageLength;
 
+    // R E C E I V E   B L O C K C H A I N   F R O M   O T H E R   N O D E S
+    while (true) {
+        // Probe for an incoming message to get its size
+        MPI_Probe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+        MPI_Get_count(&status, MPI_CHAR, &messageLength);
+
+        // Allocate buffer to receive the message
+        std::vector<char> buffer(messageLength);
+        MPI_Recv(buffer.data(), messageLength, MPI_CHAR, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+
+        // Deserialize JSON to BlockChain
+        std::string jsonString(buffer.begin(), buffer.end());
+        nlohmann::json json = nlohmann::json::parse(jsonString);
+        BlockChain receivedBlockChain = BlockChain::fromJson(json);
+
+        std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
+        if (receivedBlockChain.isValid() && (receivedBlockChain.cumulativeDifficulty() > localBlockChain.cumulativeDifficulty())) {
+            sharedLock.unlock();
+
+            std::unique_lock<std::shared_mutex> lock(blockchainSharedMutex);
+            localBlockChain = receivedBlockChain;
+            lock.unlock();
+            {
+                std::unique_lock<std::mutex> coutLock(coutMutex);
+                std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain overridden by blockchain received from " << status.MPI_SOURCE << RESET << std::endl;
+            }
+        } else {
+            std::unique_lock<std::mutex> coutLock(coutMutex);
+            std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain is better" << RESET << std::endl;
+        }
+    }
+}
+
+void client(const int rank, const int numberOfProcesses, const BlockChain &localBlockChain) {
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+
+        // S E N D   B L O C K C H A I N   T O   O T H E R   N O D E S
+        std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
+        if (!localBlockChain.empty()) {
+            nlohmann::json json = localBlockChain.toJson();
+            std::string jsonString = json.dump();
+            std::vector<char> buffer(jsonString.begin(), jsonString.end());
+
+            for (int i = 1; i < numberOfProcesses; ++i) {
+                if (i != rank) {
+                    MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, 0, MPI_COMM_WORLD);
+                }
+            }
+        }
+    }
+}
+
+void miner(const int rank, const int numberOfProcesses) {
     BlockChain localBlockchain;
     unsigned int difficulty = INITIAL_DIFFICULTY;
 
+    auto serverThread = std::thread(server, rank, numberOfProcesses, std::ref(localBlockchain));
+    auto clientThread = std::thread(client, rank, numberOfProcesses, std::ref(localBlockchain));
+
+
+    std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
+    sharedLock.unlock();
     while(true) {
+        sharedLock.lock();
         const unsigned int index = localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1;
+        const std::string prevHash = localBlockchain.empty() ? "0" : localBlockchain[localBlockchain.size() - 1].hash;
+        sharedLock.unlock();
         const std::string data = "To je blok [" + std::to_string(index) + "]";
         const auto timestamp = std::chrono::system_clock::now();
         auto timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp.time_since_epoch()).count();
-        const std::string prevHash = localBlockchain.empty() ? "0" : localBlockchain[localBlockchain.size() - 1].hash;
         Block block = Block(index, data, rank, timestamp, std::string(), prevHash, difficulty, 0);
 
         // P R O O F   O F   W O R K   -   M I N I N G
@@ -80,40 +161,77 @@ void miner(const int rank) {
 
         // V A L I D A T I O N
         timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(block.timestamp.time_since_epoch()).count();
+        sharedLock.lock();
         if ((block.index == (localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1)) &&
             ((block.prevHash) == (localBlockchain.empty() ? "0" : localBlockchain.getLastHash())) &&
             (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - block.timestamp) < std::chrono::seconds(60)) &&
             (block.hash == sha256(std::to_string(block.index) + block.data + std::to_string(timestampMS) +
                 block.prevHash + std::to_string(block.difficulty) + std::to_string(block.nonce)))
         ) {
+            sharedLock.unlock();
+            std::lock_guard<std::shared_mutex> lock(blockchainSharedMutex);
             localBlockchain.addBlock(block);
+        } else {
+            sharedLock.unlock();
         }
 
-        std::cout << localBlockchain[localBlockchain.size() - 1].toString() << std::endl;
+        /*{
+            std::unique_lock<std::mutex> coutLock(coutMutex);
+            sharedLock.lock();
+            std::cout << COLOR_CODE << localBlockchain[localBlockchain.size() - 1].toString() << RESET << std::endl;
+            sharedLock.unlock();
+        }*/
 
         // A D J U S T   D I F F I C U L T Y
+        sharedLock.lock();
         if(localBlockchain.size() % ADJUST_DIFFICULTY_INTERVAL == 0) {
-            const Block& prevAdjustmentBlock = localBlockchain[localBlockchain.size() - BLOCK_GEN_INTERVAL];
-            const Block& lastBlock = localBlockchain[localBlockchain.size() - 1];
+            const Block prevAdjustmentBlock = localBlockchain[localBlockchain.size() - BLOCK_GEN_INTERVAL];
+            const Block lastBlock = localBlockchain[localBlockchain.size() - 1];
+            sharedLock.unlock();
             constexpr unsigned int timeExpected = BLOCK_GEN_INTERVAL * ADJUST_DIFFICULTY_INTERVAL;
             const unsigned int timeTaken = std::chrono::duration_cast<std::chrono::seconds>(lastBlock.timestamp - prevAdjustmentBlock.timestamp).count();
 
             if (timeTaken < (timeExpected / 2)) {
                 difficulty = prevAdjustmentBlock.difficulty + 1;
-                std::cout << '\n' << MAGENTA << "Difficulty increased to " << difficulty << RESET << std::endl;
+                {
+                    std::unique_lock<std::mutex> coutLock(coutMutex);
+                    std::cout << COLOR_CODE << "[" << rank << "] Difficulty increased to " << difficulty << RESET << std::endl;
+                }
             }
             else if(timeTaken > (timeExpected * 2)) {
                 difficulty = prevAdjustmentBlock.difficulty - 1;
-                std::cout << '\n' << MAGENTA << "Difficulty decreased to " << difficulty << std::endl;
-            } else std::cout << '\n' << MAGENTA << "Difficulty did not change" << RESET << std::endl;
-
-            std::cout << CYAN << "Blockchain cumulative difficulty: " << localBlockchain.cumulativeDifficulty() << RESET <<std::endl;
-
-            if (localBlockchain.isValid()) {
-                std::cout << GREEN << "Blockchain still valid" << RESET << "\n\n" << std::endl;
+                {
+                    std::unique_lock<std::mutex> coutLock(coutMutex);
+                    std::cout << COLOR_CODE << "[" << rank << "] Difficulty decreased to " << difficulty << RESET << std::endl;
+                }
             } else {
-                std::cout << RED << "Blockchain no longer valid" << RESET << "\n\n" << std::endl;
+                std::unique_lock<std::mutex> coutLock(coutMutex);
+                std::cout << COLOR_CODE << "[" << rank << "] Difficulty did not change" << std::endl;
             }
+
+            /*{
+                std::unique_lock<std::mutex> coutLock(coutMutex);
+                sharedLock.lock();
+                std::cout << COLOR_CODE << "[" << rank <<  "] Blockchain cumulative difficulty: " << localBlockchain.cumulativeDifficulty() << RESET << std::endl;
+                sharedLock.unlock();
+            }*/
+
+            sharedLock.lock();
+            if (localBlockchain.isValid()) {
+                sharedLock.unlock();
+                {
+                    std::unique_lock<std::mutex> coutLock(coutMutex);
+                    std::cout << COLOR_CODE << "[" << rank << "] Blockchain still valid" << RESET << std::endl;
+                }
+            } else {
+                sharedLock.unlock();
+                {
+                    std::unique_lock<std::mutex> coutLock(coutMutex);
+                    std::cout << COLOR_CODE << "[" << rank << "] Blockchain no longer valid" << RESET << std::endl;
+                }
+            }
+        } else {
+            sharedLock.unlock();
         }
     }
 }
@@ -128,10 +246,12 @@ int main(const int argc, char *argv[])
     MPI_Comm_size(MPI_COMM_WORLD, &numberOfProcesses);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+    COLOR_CODE = getColorCode(rank);
+
     if(rank == MASTER_RANK) {
         master(numberOfProcesses);
     } else {
-        miner(rank);
+        miner(rank, numberOfProcesses);
     }
 
     // Finalize the MPI environment.

@@ -23,9 +23,12 @@ public:
     void addBlock(const Block &block);
 
     std::string toString() const;
+    nlohmann::json toJson() const;
 
     Block& operator[](const unsigned int index);
     const Block& operator[](const unsigned int index) const;
+
+    static BlockChain fromJson(const nlohmann::json &j);
 };
 
 

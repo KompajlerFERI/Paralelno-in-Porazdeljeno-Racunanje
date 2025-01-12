@@ -78,6 +78,15 @@ std::string BlockChain::toString() const {
     return blockChainString;
 }
 
+nlohmann::json BlockChain::toJson() const {
+    nlohmann::json j;
+    j["blockChain"] = nlohmann::json::array();
+    for (const Block &block : blockChain) {
+        j["blockChain"].push_back(block.toJson());
+    }
+    return j;
+}
+
 
 Block &BlockChain::operator[](const unsigned int index) {
     if (index < blockChain.size()) return blockChain[index];
@@ -88,5 +97,19 @@ const Block &BlockChain::operator[](const unsigned int index) const {
     if (index < blockChain.size()) return blockChain[index];
     throw std::out_of_range("Index out of range");
 }
+
+BlockChain BlockChain::fromJson(const nlohmann::json &j) {
+    BlockChain blockchain;
+    try {
+        for (const auto &blockJson : j.at("blockChain")) {
+            Block block = Block::fromJson(blockJson);
+            blockchain.addBlock(block);
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "Error parsing Blockchain JSON: " << e.what() << std::endl;
+    }
+    return blockchain;
+}
+
 
 
