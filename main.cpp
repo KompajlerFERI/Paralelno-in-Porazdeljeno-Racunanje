@@ -4,14 +4,20 @@
 #include <omp.h>
 #include <thread>
 #include <mutex>
+#include <queue>
 #include <shared_mutex>
+#include <condition_variable>
 
 #include "Block/Block.h"
 #include "BlockChain/BlockChain.h"
+#include "Rating/Rating.h"
 #include "sha256/sha256.h"
 
 // M P I
 constexpr int MASTER_RANK = 0;
+constexpr int DATA_TAG = 0;
+constexpr int BLOCKCHAIN_TAG = 1;
+constexpr unsigned int POOL_LIMIT = 50;
 std::string COLOR_CODE;
 
 // B L O C K   C H A I N
@@ -31,7 +37,8 @@ const std::string WHITE = "\033[37m";
 const std::string RESET = "\033[0m";
 
 std::shared_mutex blockchainSharedMutex;
-std::mutex coutMutex;
+std::mutex coutMutex, dataPoolMutex;
+std::condition_variable dataPoolCV;
 
 std::string getColorCode(const int rank) {
     switch (rank) {
@@ -47,6 +54,27 @@ std::string getColorCode(const int rank) {
 
 void master(const int numberOfProcesses) {
     std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
+
+    std::vector<std::string> pool;
+    while(true){
+        //TODO Spletna storitev
+
+        Rating fakeData("3123123132131", 5);
+        pool.push_back(fakeData.toJson().dump());
+
+        if(pool.size() >= POOL_LIMIT){
+            // S E N D   D A T A   T O   A L L   M I N E R S
+            nlohmann::json json = pool;
+            std::string jsonString = json.dump();
+            std::vector<char> buffer(jsonString.begin(), jsonString.end());
+            for(int i = 1; i < numberOfProcesses; i++){
+                MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, DATA_TAG, MPI_COMM_WORLD);
+            }
+            pool.clear();
+
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
 }
 
 unsigned int countLeadingCharacter(const std::string &text, const char character) {
@@ -55,39 +83,53 @@ unsigned int countLeadingCharacter(const std::string &text, const char character
     return counter;
 }
 
-void server(const int rank, const int numberOfProcesses, BlockChain &localBlockChain) {
+void server(const int rank, const int numberOfProcesses, BlockChain &localBlockChain, std::queue<std::string> &dataPool) {
     MPI_Status status;
     int messageLength;
 
     // R E C E I V E   B L O C K C H A I N   F R O M   O T H E R   N O D E S
     while (true) {
         // Probe for an incoming message to get its size
-        MPI_Probe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+        MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
         MPI_Get_count(&status, MPI_CHAR, &messageLength);
 
         // Allocate buffer to receive the message
         std::vector<char> buffer(messageLength);
-        MPI_Recv(buffer.data(), messageLength, MPI_CHAR, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+        MPI_Recv(buffer.data(), messageLength, MPI_CHAR, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        /*std::cout << COLOR_CODE << "[" << rank <<  "]" << " JUST RECEIVED A MESSAGE FROM " << status.MPI_SOURCE << " " << status.MPI_TAG << RESET << std::endl;*/
 
-        // Deserialize JSON to BlockChain
+        // Get Json string from buffer
         std::string jsonString(buffer.begin(), buffer.end());
         nlohmann::json json = nlohmann::json::parse(jsonString);
-        BlockChain receivedBlockChain = BlockChain::fromJson(json);
-
-        std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
-        if (receivedBlockChain.isValid() && (receivedBlockChain.cumulativeDifficulty() > localBlockChain.cumulativeDifficulty())) {
-            sharedLock.unlock();
-
-            std::unique_lock<std::shared_mutex> lock(blockchainSharedMutex);
-            localBlockChain = receivedBlockChain;
-            lock.unlock();
+        // Deserialize Data
+        if (status.MPI_TAG == DATA_TAG) {
+            std::vector<std::string> receivedDataPool = json.get<std::vector<std::string>>();
             {
-                std::unique_lock<std::mutex> coutLock(coutMutex);
-                std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain overridden by blockchain received from " << status.MPI_SOURCE << RESET << std::endl;
+                std::unique_lock<std::mutex> lock(dataPoolMutex);
+                for (const std::string& data: receivedDataPool) {
+                    dataPool.push(data);
+                }
+                dataPoolCV.notify_one();
             }
-        } else {
-            std::unique_lock<std::mutex> coutLock(coutMutex);
-            std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain is better" << RESET << std::endl;
+        } // Deserialize JSON to BlockChain
+        else {
+            BlockChain receivedBlockChain = BlockChain::fromJson(json);
+
+            std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
+            if (receivedBlockChain.isValid() && (receivedBlockChain.cumulativeDifficulty() > localBlockChain.cumulativeDifficulty())) {
+                sharedLock.unlock();
+
+                std::unique_lock<std::shared_mutex> lock(blockchainSharedMutex);
+                localBlockChain = receivedBlockChain;
+                lock.unlock();
+                {
+                    std::unique_lock<std::mutex> coutLock(coutMutex);
+                    std::cout << COLOR_CODE << "[" << rank << "] Local blockchain overridden by blockchain received from " << status.MPI_SOURCE << RESET << std::endl;
+                }
+            } else {
+                std::unique_lock<std::mutex> coutLock(coutMutex);
+                std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain is better" << RESET << std::endl;
+            }
         }
     }
 }
@@ -105,7 +147,7 @@ void client(const int rank, const int numberOfProcesses, const BlockChain &local
 
             for (int i = 1; i < numberOfProcesses; ++i) {
                 if (i != rank) {
-                    MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, 0, MPI_COMM_WORLD);
+                    MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, BLOCKCHAIN_TAG, MPI_COMM_WORLD);
                 }
             }
         }
@@ -113,10 +155,12 @@ void client(const int rank, const int numberOfProcesses, const BlockChain &local
 }
 
 void miner(const int rank, const int numberOfProcesses) {
+    std::cout << COLOR_CODE << "[" << rank << "] Hello from miner" << RESET << std::endl;
     BlockChain localBlockchain;
+    std::queue<std::string> dataPool;
     unsigned int difficulty = INITIAL_DIFFICULTY;
 
-    auto serverThread = std::thread(server, rank, numberOfProcesses, std::ref(localBlockchain));
+    auto serverThread = std::thread(server, rank, numberOfProcesses, std::ref(localBlockchain), std::ref(dataPool));
     auto clientThread = std::thread(client, rank, numberOfProcesses, std::ref(localBlockchain));
 
 
@@ -127,13 +171,23 @@ void miner(const int rank, const int numberOfProcesses) {
         const unsigned int index = localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1;
         const std::string prevHash = localBlockchain.empty() ? "0" : localBlockchain[localBlockchain.size() - 1].hash;
         sharedLock.unlock();
-        const std::string data = "To je blok [" + std::to_string(index) + "]";
+        std::string data;
         const auto timestamp = std::chrono::system_clock::now();
         auto timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp.time_since_epoch()).count();
         Block block = Block(index, data, rank, timestamp, std::string(), prevHash, difficulty, 0);
 
         // P R O O F   O F   W O R K   -   M I N I N G
         bool hashFound = false;
+
+        {
+            std::unique_lock<std::mutex> dataPoolLock(dataPoolMutex);
+            if(dataPool.empty()){
+                dataPoolCV.wait(dataPoolLock, [&] { return !dataPool.empty();});
+            }
+            data = dataPool.front();
+            block.data = data;
+            dataPool.pop();
+        }
 
         #pragma omp parallel
         {
@@ -175,7 +229,7 @@ void miner(const int rank, const int numberOfProcesses) {
             sharedLock.unlock();
         }
 
-        /*{
+        /*if (rank == 1) {
             std::unique_lock<std::mutex> coutLock(coutMutex);
             sharedLock.lock();
             std::cout << COLOR_CODE << localBlockchain[localBlockchain.size() - 1].toString() << RESET << std::endl;
@@ -234,6 +288,9 @@ void miner(const int rank, const int numberOfProcesses) {
             sharedLock.unlock();
         }
     }
+    std::cout << COLOR_CODE << "[" << rank << "] 14" << RESET << std::endl;
+    serverThread.join();
+    clientThread.join();
 }
 
 int main(const int argc, char *argv[])

@@ -9,7 +9,9 @@ add_executable(Projektna main.cpp
         BlockChain/BlockChain.cpp
         BlockChain/BlockChain.h
         sha256/sha256.cpp
-        sha256/sha256.h)
+        sha256/sha256.h
+        Rating/Rating.cpp
+        Rating/Rating.h)
 
 # Fetch and link nlohmann/json
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
