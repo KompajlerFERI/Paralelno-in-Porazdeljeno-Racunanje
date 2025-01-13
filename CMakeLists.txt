@@ -18,6 +18,11 @@ FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download
 FetchContent_MakeAvailable(json)
 target_link_libraries(Projektna PRIVATE nlohmann_json::nlohmann_json)
 
+# Fetch and link cpp-httplib
+FetchContent_Declare(httplib URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.10.8.tar.gz)
+FetchContent_MakeAvailable(httplib)
+target_include_directories(Projektna PRIVATE ${httplib_SOURCE_DIR})
+
 # Fetch and link OpenMP
 FetchContent_Declare(openmp URL https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/openmp-14.0.0.src.tar.xz)
 FetchContent_MakeAvailable(openmp)
@@ -35,6 +40,9 @@ FetchContent_Declare(openssl URL https://www.openssl.org/source/openssl-1.1.1l.t
 FetchContent_MakeAvailable(openssl)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(Projektna PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+
+# Link against ws2_32 library for Winsock functions
+target_link_libraries(Projektna PRIVATE ws2_32)
 
 # Set compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -O2")

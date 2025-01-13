@@ -12,12 +12,14 @@
 #include "BlockChain/BlockChain.h"
 #include "Rating/Rating.h"
 #include "sha256/sha256.h"
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#include "httplib.h"
 
 // M P I
 constexpr int MASTER_RANK = 0;
 constexpr int DATA_TAG = 0;
 constexpr int BLOCKCHAIN_TAG = 1;
-constexpr unsigned int POOL_LIMIT = 50;
+constexpr unsigned int POOL_LIMIT = 10;
 std::string COLOR_CODE;
 
 // B L O C K   C H A I N
@@ -52,7 +54,7 @@ std::string getColorCode(const int rank) {
     }
 }
 
-void master(const int numberOfProcesses) {
+/*void master(const int numberOfProcesses) {
     std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
 
     std::vector<std::string> pool;
@@ -75,6 +77,69 @@ void master(const int numberOfProcesses) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     }
+}*/
+void master(const int numberOfProcesses) {
+    std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
+
+    std::vector<std::string> pool;
+    std::mutex poolMutex;
+
+    // Create a web server
+    httplib::Server svr;
+
+    // Define a route to add data to the pool
+    svr.Post("/add_data", [&pool, &poolMutex](const httplib::Request& req, httplib::Response& res) {
+        std::cout << "Received POST request: " << req.body << std::endl;
+        try {
+            auto json = nlohmann::json::parse(req.body);
+            std::string user = json["user"];
+            unsigned int score = json["score"];
+            Rating newRating(user, score);
+
+            {
+                std::lock_guard<std::mutex> lock(poolMutex);
+                pool.push_back(newRating.toJson().dump());
+                std::cout << "Data added to pool: " << newRating.toJson().dump() << std::endl;
+            }
+
+            res.set_content("Data added", "text/plain");
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing POST request: " << e.what() << std::endl;
+            res.status = 400;
+            res.set_content("Invalid data", "text/plain");
+        }
+    });
+
+    // Start the server in a separate thread
+    std::thread serverThread([&svr]() {
+        std::cout << "Starting server on port 8080" << std::endl;
+        if (!svr.listen("0.0.0.0", 8080)) {
+            std::cerr << "Error starting server" << std::endl;
+        }
+    });
+
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(poolMutex);
+            if (pool.size() >= POOL_LIMIT) {
+                std::cout << "Pool limit reached, sending data to miners" << std::endl;
+                // Send data to all miners
+                nlohmann::json json = pool;
+                std::string jsonString = json.dump();
+                std::vector<char> buffer(jsonString.begin(), jsonString.end());
+                for (int i = 1; i < numberOfProcesses; i++) {
+                    MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, DATA_TAG, MPI_COMM_WORLD);
+                    std::cout << "Data sent to miner " << i << std::endl;
+                }
+                pool.clear();
+                std::cout << "Pool cleared" << std::endl;
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+
+    serverThread.join();
 }
 
 unsigned int countLeadingCharacter(const std::string &text, const char character) {
@@ -229,12 +294,12 @@ void miner(const int rank, const int numberOfProcesses) {
             sharedLock.unlock();
         }
 
-        /*if (rank == 1) {
+        if (rank == 1) {
             std::unique_lock<std::mutex> coutLock(coutMutex);
             sharedLock.lock();
             std::cout << COLOR_CODE << localBlockchain[localBlockchain.size() - 1].toString() << RESET << std::endl;
             sharedLock.unlock();
-        }*/
+        }
 
         // A D J U S T   D I F F I C U L T Y
         sharedLock.lock();
