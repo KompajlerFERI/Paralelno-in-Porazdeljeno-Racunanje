@@ -35,9 +35,8 @@ FetchContent_MakeAvailable(mpi)
 find_package(MPI REQUIRED)
 target_link_libraries(Projektna PUBLIC MPI::MPI_CXX)
 
-# Fetch and link OpenSSL
-FetchContent_Declare(openssl URL https://www.openssl.org/source/openssl-1.1.1l.tar.gz)
-FetchContent_MakeAvailable(openssl)
+set(OPENSSL_ROOT_DIR "C:/msys64/mingw64")
+# Find OpenSSL and Link it
 find_package(OpenSSL REQUIRED)
 target_link_libraries(Projektna PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
