@@ -17,12 +17,13 @@
 // M P I
 constexpr int MASTER_RANK = 0;
 constexpr int DATA_TAG = 0;
-constexpr int BLOCKCHAIN_TAG = 1;
+constexpr int BLOCK_FOUND_TAG = 1;
+constexpr int BLOCK_TAG = 2;
 constexpr unsigned int POOL_LIMIT = 10;
 std::string COLOR_CODE;
 
 // B L O C K   C H A I N
-constexpr unsigned int INITIAL_DIFFICULTY = 3;
+constexpr unsigned int INITIAL_DIFFICULTY = 4;
 constexpr unsigned int BLOCK_GEN_INTERVAL = 2; // in seconds
 constexpr unsigned int ADJUST_DIFFICULTY_INTERVAL = 5; // every 5 blocks generated
 
@@ -53,30 +54,6 @@ std::string getColorCode(const int rank) {
     }
 }
 
-/*void master(const int numberOfProcesses) {
-    std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
-
-    std::vector<std::string> pool;
-    while(true){
-        //TODO Spletna storitev
-
-        Rating fakeData("3123123132131", 5);
-        pool.push_back(fakeData.toJson().dump());
-
-        if(pool.size() >= POOL_LIMIT){
-            // S E N D   D A T A   T O   A L L   M I N E R S
-            nlohmann::json json = pool;
-            std::string jsonString = json.dump();
-            std::vector<char> buffer(jsonString.begin(), jsonString.end());
-            for(int i = 1; i < numberOfProcesses; i++){
-                MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, DATA_TAG, MPI_COMM_WORLD);
-            }
-            pool.clear();
-
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-        }
-    }
-}*/
 void master(const int numberOfProcesses) {
     std::cout << "Hello from master (" << MASTER_RANK << ")" << std::endl;
 
@@ -124,65 +101,6 @@ unsigned int countLeadingCharacter(const std::string &text, const char character
     return counter;
 }
 
-void server(const int rank, const int numberOfProcesses, BlockChain &localBlockChain) {
-    MPI_Status status;
-    int messageLength;
-
-    // R E C E I V E   B L O C K C H A I N   F R O M   O T H E R   N O D E S
-    while (true) {
-        // P R O B E   F O R   M E S S A G E   S I Z E
-        MPI_Probe(MPI_ANY_SOURCE, BLOCKCHAIN_TAG, MPI_COMM_WORLD, &status);
-        MPI_Get_count(&status, MPI_CHAR, &messageLength);
-
-        // A L L O C A T E   B U F F E R
-        std::vector<char> buffer(messageLength);
-        MPI_Recv(buffer.data(), messageLength, MPI_CHAR, MPI_ANY_SOURCE, BLOCKCHAIN_TAG, MPI_COMM_WORLD, &status);
-        /*std::cout << COLOR_CODE << "[" << rank <<  "]" << " JUST RECEIVED A MESSAGE FROM " << status.MPI_SOURCE << " " << status.MPI_TAG << RESET << std::endl;*/
-
-        // G E T   J S O N   S T R I N G   F R O M   B U F F E R
-        std::string jsonString(buffer.begin(), buffer.end());
-        nlohmann::json json = nlohmann::json::parse(jsonString);
-
-        // D E S E R I A L I Z E   B L O C K C H A I N
-        BlockChain receivedBlockChain = BlockChain::fromJson(json);
-
-        std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
-        if (receivedBlockChain.isValid() && (receivedBlockChain.cumulativeDifficulty() > localBlockChain.cumulativeDifficulty())) {
-            sharedLock.unlock();
-
-            std::unique_lock<std::shared_mutex> lock(blockchainSharedMutex);
-            localBlockChain = receivedBlockChain;
-            lock.unlock();
-            {
-                std::unique_lock<std::mutex> coutLock(coutMutex);
-                std::cout << COLOR_CODE << "[" << rank << "] Local blockchain overridden by blockchain received from " << status.MPI_SOURCE << RESET << std::endl;
-            }
-        } else {
-            std::unique_lock<std::mutex> coutLock(coutMutex);
-            std::cout << COLOR_CODE << "[" << rank <<  "] Local blockchain is better than " << status.MPI_SOURCE << "'s" << RESET << std::endl;
-        }
-    }
-}
-
-void client(const int rank, const int numberOfProcesses, const BlockChain &localBlockChain) {
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-
-        // S E N D   B L O C K C H A I N   T O   O T H E R   N O D E S
-        std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
-        if (!localBlockChain.empty()) {
-            nlohmann::json json = localBlockChain.toJson();
-            std::string jsonString = json.dump();
-            std::vector<char> buffer(jsonString.begin(), jsonString.end());
-
-            for (int i = 1; i < numberOfProcesses; ++i) {
-                if (i != rank) {
-                    MPI_Send(buffer.data(), buffer.size(), MPI_CHAR, i, BLOCKCHAIN_TAG, MPI_COMM_WORLD);
-                }
-            }
-        }
-    }
-}
 
 void miner(const int rank, const int numberOfProcesses) {
     std::cout << COLOR_CODE << "[" << rank << "] Hello from miner" << RESET << std::endl;
@@ -191,15 +109,14 @@ void miner(const int rank, const int numberOfProcesses) {
     MPI_Status status;
     int messageLength;
 
-    auto serverThread = std::thread(server, rank, numberOfProcesses, std::ref(localBlockchain));
-    auto clientThread = std::thread(client, rank, numberOfProcesses, std::ref(localBlockchain));
-
-
     std::shared_lock<std::shared_mutex> sharedLock(blockchainSharedMutex);
     sharedLock.unlock();
     while(true) {
+        /*std::cout << COLOR_CODE << "[" << rank << "] WAITING FOR DATA" << RESET << std::endl;*/
         MPI_Probe(MASTER_RANK, DATA_TAG, MPI_COMM_WORLD, &status);
         MPI_Get_count(&status, MPI_CHAR, &messageLength);
+
+        /*std::cout << "DATA RECEIVED" << std::endl;*/
 
         std::vector<char> buffer(messageLength);
         MPI_Recv(buffer.data(), messageLength, MPI_CHAR, MASTER_RANK, DATA_TAG, MPI_COMM_WORLD, &status);
@@ -215,7 +132,8 @@ void miner(const int rank, const int numberOfProcesses) {
         Block block = Block(index, data, rank, timestamp, std::string(), prevHash, difficulty, 0);
 
         // P R O O F   O F   W O R K   -   M I N I N G
-        bool hashFound = false;
+        bool globalHashFound = false;
+        bool localHashFound = false;
 
         #pragma omp parallel
         {
@@ -226,43 +144,123 @@ void miner(const int rank, const int numberOfProcesses) {
             const t_ull end = (thread_id + 1) * step;
 
             std::string localHash;
-            for (t_ull localNonce = start; localNonce < end && !hashFound; ++localNonce) {
+            for (t_ull localNonce = start; localNonce < end && !localHashFound && !globalHashFound; ++localNonce) {
                 localHash = sha256(std::to_string(index) + data + std::to_string(timestampMS) + prevHash + std::to_string(difficulty) + std::to_string(localNonce));
                 if (countLeadingCharacter(localHash, '0') >= difficulty) {
-                #pragma omp critical
+                    #pragma omp critical
                     {
-                        if (!hashFound) {
-                            hashFound = true;
+                        /*std::cout << COLOR_CODE << "[" << rank << "] FOUND BLOCK" << RESET << std::endl;*/
+                        if (!localHashFound) {
+                            localHashFound = true;
+                            globalHashFound = true;
                             block.hash = localHash;
                             block.nonce = localNonce;
                         }
                     }
                 }
+                // Check if any miner has found a block
+                #pragma omp critical
+                {
+                    int flag;
+                    MPI_Iprobe(MPI_ANY_SOURCE, BLOCK_FOUND_TAG, MPI_COMM_WORLD, &flag, &status);
+                    if (flag) {
+                        /*std::cout << COLOR_CODE << "[" << rank << "] SOMEONE FOUND THE BLOCK" << RESET << std::endl;*/
+                        MPI_Recv(&globalHashFound, 1, MPI_C_BOOL, MPI_ANY_SOURCE, BLOCK_FOUND_TAG, MPI_COMM_WORLD, &status);
+                    }
+                }
             }
         }
 
-        // V A L I D A T I O N
-        timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(block.timestamp.time_since_epoch()).count();
-        sharedLock.lock();
-        if ((block.index == (localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1)) &&
-            ((block.prevHash) == (localBlockchain.empty() ? "0" : localBlockchain.getLastHash())) &&
-            (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - block.timestamp) < std::chrono::seconds(60)) &&
-            (block.hash == sha256(std::to_string(block.index) + block.data + std::to_string(timestampMS) +
-                block.prevHash + std::to_string(block.difficulty) + std::to_string(block.nonce)))
-        ) {
-            sharedLock.unlock();
-            std::lock_guard<std::shared_mutex> lock(blockchainSharedMutex);
-            localBlockchain.addBlock(block);
-        } else {
-            sharedLock.unlock();
+        /*std::cout << COLOR_CODE << "[" << rank << "] BROKE OUT" << RESET << std::endl;*/
+
+        if (localHashFound) {
+            /*std::cout << COLOR_CODE << "[" << rank << "] SENDING TO OTHERS THAT I FOUND BLOCK" << RESET << std::endl;*/
+
+            // Send data to all miners immediately
+            for (int i = 1; i < numberOfProcesses; i++) {
+                if (i != rank) {
+                    /*std::cout << COLOR_CODE << "[" << rank << "] SENDING TO " << i << RESET << std::endl;*/
+                    MPI_Send(&globalHashFound, 1, MPI_C_BOOL, i, BLOCK_FOUND_TAG, MPI_COMM_WORLD);
+                }
+            }
+        }
+
+        // Send the local block to all miners
+        std::string blockJsonString = block.toJson().dump();
+        std::vector<char> blockBuffer(blockJsonString.begin(), blockJsonString.end());
+        for (int i = 1; i < numberOfProcesses; i++) {
+            if (i != rank) {
+                /*std::cout << COLOR_CODE << "[" << rank << "] SENDING MY BLOCK TO " << i << RESET << std::endl;*/
+                MPI_Send(blockBuffer.data(), blockBuffer.size(), MPI_CHAR, i, BLOCK_TAG, MPI_COMM_WORLD);
+            }
+        }
+
+        // Receive blocks from all other miners
+        std::vector<Block> receivedBlocks(numberOfProcesses - 1);
+        receivedBlocks[rank - 1] = block;
+        bool allBlocksReceived = false;
+        while (!allBlocksReceived) {
+            MPI_Probe(MPI_ANY_SOURCE, BLOCK_TAG, MPI_COMM_WORLD, &status);
+            MPI_Get_count(&status, MPI_CHAR, &messageLength);
+
+            std::vector<char> recvBuffer(messageLength);
+            MPI_Recv(recvBuffer.data(), messageLength, MPI_CHAR, MPI_ANY_SOURCE, BLOCK_TAG, MPI_COMM_WORLD, &status);
+
+            /*std::cout << COLOR_CODE << "[" << rank << "] RECEIVED FROM " << status.MPI_SOURCE << RESET << std::endl;*/
+
+            std::string recvData(recvBuffer.begin(), recvBuffer.end());
+            Block receivedBlock = Block::fromJson(nlohmann::json::parse(recvData));
+            receivedBlocks[status.MPI_SOURCE - 1] = receivedBlock;
+
+            for (int i = 0; i < numberOfProcesses - 1; i++) {
+                if (receivedBlocks[i].miner != 0) {
+                    allBlocksReceived = true;
+                } else {
+                    /*std::cout << COLOR_CODE << "[" << rank << "] Missing block from " << i + 1 << status.MPI_SOURCE << RESET << std::endl;*/
+                    allBlocksReceived = false;
+                    break;
+                }
+            }
+        }
+
+        /*std::cout << COLOR_CODE << "[" << rank << "] ALL BLOCKS RECEIVED " << RESET << std::endl;*/
+
+        for (int i = 0; i < numberOfProcesses - 1; i++) {
+            Block currentBlock = receivedBlocks[i];
+            /*std::cout << COLOR_CODE << "[" << rank << "] VALIDATING " << i + 1 << RESET << std::endl;*/
+            // V A L I D A T I O N
+            timestampMS = std::chrono::duration_cast<std::chrono::milliseconds>(currentBlock.timestamp.time_since_epoch()).count();
+            sharedLock.lock();
+            if ((currentBlock.index == (localBlockchain.empty() ? 0 : localBlockchain.getLastIndex() + 1)) &&
+                ((currentBlock.prevHash) == (localBlockchain.empty() ? "0" : localBlockchain.getLastHash())) &&
+                (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - currentBlock.timestamp) < std::chrono::seconds(60)) &&
+                (currentBlock.hash == sha256(std::to_string(currentBlock.index) + currentBlock.data + std::to_string(timestampMS) +
+                    currentBlock.prevHash + std::to_string(currentBlock.difficulty) + std::to_string(currentBlock.nonce)))
+            ) {
+                sharedLock.unlock();
+                std::lock_guard<std::shared_mutex> lock(blockchainSharedMutex);
+                /*std::cout << COLOR_CODE << "[" << rank << "] VALID BLOCK: " << i + 1 << RESET << std::endl;*/
+                localBlockchain.addBlock(currentBlock);
+                break;
+            } else {
+                sharedLock.unlock();
+            }
         }
 
         if (rank == 1) {
-            std::unique_lock<std::mutex> coutLock(coutMutex);
-            sharedLock.lock();
-            std::cout << COLOR_CODE << localBlockchain[localBlockchain.size() - 1].toString() << RESET << std::endl;
-            sharedLock.unlock();
+            std::cout << getColorCode(localBlockchain[localBlockchain.getLastIndex()].miner) << localBlockchain[localBlockchain.getLastIndex()].toString() << RESET << std::endl;
         }
+
+        int flag;
+        MPI_Status status;
+
+        do {
+            MPI_Iprobe(MPI_ANY_SOURCE, BLOCK_FOUND_TAG, MPI_COMM_WORLD, &flag, &status);
+            if (flag) {
+                bool dummy;
+                MPI_Recv(&dummy, 1, MPI_C_BOOL, MPI_ANY_SOURCE, BLOCK_FOUND_TAG, MPI_COMM_WORLD, &status);
+            }
+        } while (flag);
 
         // A D J U S T   D I F F I C U L T Y
         sharedLock.lock();
@@ -316,8 +314,6 @@ void miner(const int rank, const int numberOfProcesses) {
             sharedLock.unlock();
         }
     }
-    serverThread.join();
-    clientThread.join();
 }
 
 int main(const int argc, char *argv[]) {
